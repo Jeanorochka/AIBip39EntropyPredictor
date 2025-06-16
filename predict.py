@@ -1,5 +1,5 @@
-#!/usr/bin/env python3
-# predictor.py — Mnemonic phrase predictor with ETH, BTC, SOL derivation and balance checking
+#venv dlya python310 
+#predict.py na modeli iz train.py ~ 
 
 import sys, os, time, hashlib, requests, hmac, struct, base58
 import torch
