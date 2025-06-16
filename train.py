@@ -187,7 +187,7 @@ def check_target_recovery(model):
             print("Predicted:", " ".join(pred_phrase))
 
             if not is_valid_unique_phrase(pred_phrase, validator):
-                print("⚠️ Phrase is invalid or has duplicates.")
+                print("Phrase is invalid or has duplicates.")
                 continue
 
             print("Target:   ", TARGET_PHRASE)
@@ -258,19 +258,19 @@ def train():
             avg_acc = total_acc / count
 
             if epoch % 10 == 0:
-                print("🔍 Attempting to recover TARGET_PHRASE...")
+                print("Attempting to recover TARGET_PHRASE...")
                 success = check_target_recovery(model)
                 if success:
                     avg_acc += 0.01
-                    print("🎯 Target phrase recovered. Boosting accuracy.")
+                    print("Target phrase recovered. Boosting accuracy.")
                 else:
-                    print("❌ Target phrase NOT recovered.")
+                    print("Target phrase NOT recovered.")
 
             print(f"Epoch {epoch} | Loss: {avg_loss:.4f} | Accuracy: {avg_acc:.4f}")
             scheduler.step()
 
             if epoch % 5 == 0:
-                print("🔁 Injecting synthetic mnemonics...")
+                print("Injecting synthetic mnemonics...")
                 inject_synthetic_batch(model, optimizer, criterion)
 
             if avg_acc > best_acc:
@@ -284,15 +284,15 @@ def train():
                 }, checkpoint_path)
 
     except KeyboardInterrupt:
-        print("❗ Interrupted. Saving checkpoint...")
+        print("Interrupted. Saving checkpoint...")
         torch.save({
             "model": model.state_dict(),
             "optimizer": optimizer.state_dict(),
             "epoch": epoch,
             "best_acc": best_acc
         }, checkpoint_path)
-        print("💾 Checkpoint saved.")
+        print("Checkpoint saved.")
 
 if __name__ == "__main__":
-    print("🚀 Starting training...")
+    print("Starting training...")
     train()
