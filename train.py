@@ -17,14 +17,17 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 PHRASE_LEN = 12
 ADDR_LEN = 32
 
-TARGET_PHRASE = "***"
-TARGET_ETH = "***"
-TARGET_SOL = "***"
-TARGET_BTC = "***"
+ANCHOR_PHRASE = "12 word phrase example".split()
+ANCHOR_WEIGHT = 5.0
+
+TARGET_PHRASE = "12 word phrase example"
+TARGET_ETH = "xxx"
+TARGET_SOL = "yyy"
+TARGET_BTC = "zzz"
 
 REFERENCE_PHRASES = {
     tuple(TARGET_PHRASE.split()): 5.0,
-    tuple("***".split()): 5.0,
+    tuple("12 word phrase example".split()): 5.0,
 }
 
 RECALL_SCORE_MAP = {
@@ -95,7 +98,11 @@ class MnemonicDataset(Dataset):
         sha = hashlib.sha256(address.encode("utf-8")).digest()
         addr_bytes = torch.frombuffer(bytearray(sha), dtype=torch.uint8).to(torch.long)
         phrase_tensor = torch.tensor([WORD2IDX[word] for word in phrase], dtype=torch.long)
-        weight = REFERENCE_PHRASES.get(tuple(w.strip().lower() for w in phrase), 1.0)
+        key = tuple(w.strip().lower() for w in phrase)
+        if len(set(phrase)) < len(phrase):
+            weight = 0.0  # repeated word — punish
+        else:
+            weight = REFERENCE_PHRASES.get(key, 1.0)
         return addr_bytes, phrase_tensor, torch.tensor(weight, dtype=torch.float)
 
 class FullTransformerModel(nn.Module):
@@ -132,6 +139,25 @@ def inject_synthetic_batch(model, optimizer, criterion, num_samples=64):
     generator = Bip39MnemonicGenerator()
     validator = Bip39MnemonicValidator()
 
+    anchor_tensor = torch.tensor([[WORD2IDX[w] for w in ANCHOR_PHRASE]], dtype=torch.long).to(DEVICE)
+    seed = Bip39SeedGenerator(" ".join(ANCHOR_PHRASE)).Generate()
+    for addr in [derive_eth(seed), derive_btc(seed), derive_sol(seed)[0]]:
+            sha = hashlib.sha256(addr.encode("utf-8")).digest()
+            addr_bytes = torch.tensor([list(sha)], dtype=torch.long).to(DEVICE)
+
+            recall_n = random.randint(1, PHRASE_LEN)
+            decoder_input = torch.full((1, recall_n), PAD_IDX, dtype=torch.long).to(DEVICE)
+            decoder_input[0][0] = BOS_IDX
+            decoder_input[0, 1:recall_n] = anchor_tensor[0, :recall_n - 1]
+            target_output = anchor_tensor[:, :recall_n]
+
+            logits, _ = model(addr_bytes, decoder_input)
+            loss_all = criterion(logits.view(-1, VOCAB_SIZE), target_output.view(-1)).view(target_output.shape)
+            loss_ce = loss_all.sum() * ANCHOR_WEIGHT
+            loss_ce.backward()
+            optimizer.step()
+            optimizer.zero_grad()
+
     for _ in range(num_samples):
         phrase = generate_valid_phrase(generator, validator)
 
@@ -161,7 +187,7 @@ def inject_synthetic_batch(model, optimizer, criterion, num_samples=64):
                 optimizer.zero_grad()
         except Exception:
             continue
-
+        
 def check_target_recovery(model):
     model.eval()
     validator = Bip39MnemonicValidator()
@@ -187,7 +213,7 @@ def check_target_recovery(model):
             print("Predicted:", " ".join(pred_phrase))
 
             if not is_valid_unique_phrase(pred_phrase, validator):
-                print("Phrase is invalid or has duplicates.")
+                print("⚠️ Phrase is invalid or has duplicates.")
                 continue
 
             print("Target:   ", TARGET_PHRASE)
@@ -275,7 +301,7 @@ def train():
 
             if avg_acc > best_acc:
                 best_acc = avg_acc
-                print("✅ Saving best model...")
+                print("Saving best model...")
                 torch.save({
                     "model": model.state_dict(),
                     "optimizer": optimizer.state_dict(),
