@@ -17,17 +17,17 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 PHRASE_LEN = 12
 ADDR_LEN = 34
 
-ANCHOR_PHRASE = "".split()
+ANCHOR_PHRASE = "anchor phrase example anchor phrase example anchor phrase example anchor phrase example".split()
 ANCHOR_WEIGHT = 5.0
 
-TARGET_PHRASE = "p"
-TARGET_ETH = ""
-TARGET_SOL = ""
-TARGET_BTC = ""
+TARGET_PHRASE = "target phrase example target phrase example target phrase example target phrase example"
+TARGET_ETH = "0xethAdressExam"
+TARGET_SOL = "9wSOLANAADRESSexample"
+TARGET_BTC = "bx0btcadressexample"
 
 REFERENCE_PHRASES = {
     tuple(TARGET_PHRASE.split()): 5.0,
-    tuple("".split()): 5.0,
+    tuple("anchor phrase example anchor phrase example anchor phrase example anchor phrase example".split()): 5.0,
 }
 
 RECALL_SCORE_MAP = {
