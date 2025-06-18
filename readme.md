@@ -14,7 +14,8 @@ The included version is stripped of any sensitive data or real wallet access.
 No real keys or phrases are present.
 
 ## To make it work:
-Change example phrases and adresses to the one u wanna study around, it defines ethropy/generation
+Change example phrases and adresses to the ones u wanna study around, it defines ethropy/generation
+Get / have a dataset that looks like one I left in data folder, as an example
 
 ## coffee tips
 
