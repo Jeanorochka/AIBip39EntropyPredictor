@@ -17,17 +17,17 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 PHRASE_LEN = 12
 ADDR_LEN = 34
 
-ANCHOR_PHRASE = "".split()
+ANCHOR_PHRASE = "drop aerobic behind select yellow sentence they lemon weasel whale luxury stay".split()
 ANCHOR_WEIGHT = 5.0
 
-TARGET_PHRASE = ""
-TARGET_ETH = ""
-TARGET_SOL = ""
-TARGET_BTC = ""
+TARGET_PHRASE = "pool scout later trade scorpion matrix fire wrap huge online keep vacuum"
+TARGET_ETH = "0x6A91d64daad9B6487Df7F46FBdC5257186cA4128"
+TARGET_SOL = "9Qjq89iTHyHjsHjCcZ3YYigR98LFstaLSucXXAA2qwaN"
+TARGET_BTC = "bc1q5fw5svgpdqswg49g4kcrykypxe3q4melv2kakr"
 
 REFERENCE_PHRASES = {
     tuple(TARGET_PHRASE.split()): 5.0,
-    tuple("".split()): 5.0,
+    tuple("drop aerobic behind select yellow sentence they lemon weasel whale luxury stay".split()): 5.0,
 }
 
 RECALL_SCORE_MAP = {
@@ -94,7 +94,7 @@ class MnemonicDataset(Dataset):
                             self.data.append((pubkey_bytes, phrase, coin))
                         else:
                             self.skipped += 1
-                            
+    
                 except json.JSONDecodeError:
                     self.skipped += 1
         print(f"Loaded {len(self.data):,} samples | Skipped: {self.skipped:,}")
@@ -103,11 +103,10 @@ class MnemonicDataset(Dataset):
         return len(self.data)
 
     def __getitem__(self, idx):
-        
         COIN2IDX = {"eth": 1, "btc": 2, "sol": 3}
         pubkey_bytes, phrase, coin = self.data[idx]  
         assert len(pubkey_bytes) >= 33, "Pubkey слишком короткий"
-        pubkey_trunc = pubkey_bytes[:33]  
+        pubkey_trunc = pubkey_bytes[:33] 
         coin_idx = COIN2IDX.get(coin.lower(), 0)
         coin_byte = torch.tensor([coin_idx], dtype=torch.uint8)
         addr_bytes = torch.tensor(list(pubkey_trunc), dtype=torch.uint8)
@@ -118,7 +117,8 @@ class MnemonicDataset(Dataset):
         assert phrase_tensor.size(0) <= PHRASE_LEN, "Phrase too long for model's max length"
         key = tuple(w.strip().lower() for w in phrase)
         if len(set(phrase)) < len(phrase):
-            weight = 0.0  
+            weight = 0.0 
+            entropy_class = 0.0
         else:
             weight = 1.0  
             entropy_class = float(len(set(phrase)) == len(phrase)) 
@@ -145,9 +145,8 @@ class FullTransformerModel(nn.Module):
         self.coin_embed = nn.Embedding(4, 64)
 
     def forward(self, addr_bytes, phrase_input):
-        coin_idx = addr_bytes[:, -1]  
-        addr_core = addr_bytes[:, :-1]  
-
+        coin_idx = addr_bytes[:, -1]
+        addr_core = addr_bytes[:, :-1] 
         addr_embed = self.byte_embed(addr_core) + self.pos_enc_addr[:, :addr_core.size(1), :]
         addr_embed[:, 0, :] += self.coin_embed(coin_idx)
 
@@ -172,9 +171,11 @@ def inject_synthetic_batch(model, optimizer, criterion, num_samples=64):
 
     for addr, coin in [(TARGET_ETH, "eth"), (TARGET_BTC, "btc"), (TARGET_SOL, "sol")]:
         pubkey_bytes = derive_pubkey_bytes(addr, coin)
-        if pubkey_bytes is None:
+
+        if pubkey_bytes is None or len(pubkey_bytes) < 33:
+            print(f"[SYNTHETIC WARN] Skipping {coin} {addr} — pubkey too short")
             continue
-        #
+        
         COIN2IDX = {"eth": 1, "btc": 2, "sol": 3}
         assert len(pubkey_bytes) >= 33, "pubkey слишком короткий"
         pubkey_trunc = pubkey_bytes[:33]
@@ -217,7 +218,8 @@ def inject_synthetic_batch(model, optimizer, criterion, num_samples=64):
 
             for addr, coin in [(TARGET_ETH, "eth"), (TARGET_BTC, "btc"), (TARGET_SOL, "sol")]:
                 pubkey_bytes = derive_pubkey_bytes(addr, coin)
-                if pubkey_bytes is None:
+                if pubkey_bytes is None or len(pubkey_bytes) < 33:
+                    print(f"[SYNTHETIC WARN] Skipping {coin} {addr} — pubkey too short")
                     continue
 
                 COIN2IDX = {"eth": 1, "btc": 2, "sol": 3}
@@ -251,10 +253,10 @@ def check_target_recovery(model, epoch):
         COIN2IDX = {"eth": 1, "btc": 2, "sol": 3}
         for target_addr, coin in [(TARGET_ETH, "eth"), (TARGET_BTC, "btc"), (TARGET_SOL, "sol")]:
             pubkey_bytes = derive_pubkey_bytes(target_addr, coin)
-            if pubkey_bytes is None:
-                continue 
-                
-            assert len(pubkey_bytes) >= 33
+            if pubkey_bytes is None or len(pubkey_bytes) < 33:
+                 print(f"[WARN] Skipping {coin} {target_addr} — pubkey too short")
+                 continue
+            
             pubkey_trunc = pubkey_bytes[:33]
             coin_idx = COIN2IDX.get(coin, 0)
             addr_combined = list(pubkey_trunc) + [coin_idx]
@@ -329,10 +331,10 @@ def train():
                 target_output = phrase_tensor[:, :recall_n]
 
                 logits, addr_summary = model(addr_bytes, decoder_input)
-        
-                output_tokens = logits.argmax(dim=-1) 
+
+                output_tokens = logits.argmax(dim=-1)  
                 embedded_tokens = model.embed_phrase(output_tokens)
-                phrase_repr = embedded_tokens.mean(dim=1)  
+                phrase_repr = embedded_tokens.mean(dim=1) 
 
                 contrast_loss = 1 - cosine_similarity(phrase_repr, addr_summary, dim=1).mean()
                 sim = cosine_similarity(phrase_repr, addr_summary, dim=1)
@@ -348,7 +350,6 @@ def train():
                 epoch_accs.append(accuracy_boost)
                 total_acc += (recall_fraction.mean().item() * RECALL_SCORE_MAP[recall_n])
                 
-                #
                 entropy_class = entropy_class.to(DEVICE)
                 loss_ce = (loss_all.sum(dim=1) * weights * entropy_class).mean()
                 loss = loss_ce + 0.3 * contrast_loss
