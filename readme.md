@@ -16,7 +16,11 @@ No real keys or phrases are present.
 ## To make it work:
 Change example phrases and adresses to the one u wanna study around, it defines ethropy/generation
 
-## coffee tips: 
+<br>
+<br>
+<br>
+
+## coffee tips
 
 0x4774E5E140dd2fD877fbfEA6A902BE2BAC059064 - ETH <br>
 bc1pumw56cx5m2mm0ksy5wge3m6jxvkdusxm6vwlg7x9fd9kazc2grrs2z378j - BTC <br>
