@@ -1,4 +1,4 @@
-#venv dlya python310 
+#python310 
 #predict.py na modeli iz train.py ~ 
 
 import sys, os, time, hashlib, requests, hmac, struct, base58
@@ -6,7 +6,8 @@ import torch
 import concurrent.futures as futures
 from nacl import signing
 from datetime import datetime
-from train import FullTransformerModel, IDX2WORD, WORD2IDX, PAD_IDX
+from train import FullTransformerModel
+from constants import IDX2WORD, WORD2IDX, PAD_IDX, BOS_IDX
 from bip_utils import (
     Bip39MnemonicValidator, Bip39SeedGenerator,
     Bip44, Bip44Coins, Bip44Changes,
@@ -15,28 +16,17 @@ from bip_utils import (
 )
 from eth_account import Account
 
-# ───────────────────────── CONFIG ─────────────────────────
 DEVICE            = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 CHECKPOINT_PATH   = "Models/transformer_checkpoint.pt"
-NUM_VARIANTS      = 8
-BATCH_PHRASES     = 7
-BTC_MAX_WORKERS   = 3
-BTC_RETRIES       = 3
-
-ETH_RPC_URL = os.getenv("ETH_RPC_URL", "https://rpc.ankr.com/eth")
-SOL_RPC_URL = os.getenv("SOL_RPC_URL", "https://api.mainnet-beta.solana.com")
-
-WORDS_EN = Bip39MnemonicGenerator(lang=Bip39Languages.ENGLISH).FromWordsNumber(Bip39WordsNum.WORDS_NUM_12).ToStr().split()
-os.makedirs("Data", exist_ok=True)
-
-# ───────────────────────── UTILS ─────────────────────────
-
-def encode_addresses_batch(addresses):
-    hashes = [list(hashlib.sha256(a.encode()).digest()) for a in addresses]
-    return torch.tensor(hashes, dtype=torch.long, device=DEVICE)
+ETH_RPC_URL       = os.getenv("ETH_RPC_URL", "https://rpc.ankr.com/eth/84ca8aa47c21b1dbff3d1b5bfd531462a19a11cf9bf675cb084427c54507c625")
+SOL_RPC_URL       = os.getenv("SOL_RPC_URL", "https://api.mainnet-beta.solana.com")
 
 def encode_address(addr: str):
-    return encode_addresses_batch([addr])
+    addr_sha = hashlib.sha256(addr.encode("utf-8")).digest()
+    addr_tensor = torch.tensor(list(addr_sha), dtype=torch.float32).to(DEVICE)
+    return addr_tensor
+
+WORDS_EN = Bip39MnemonicGenerator(lang=Bip39Languages.ENGLISH).FromWordsNumber(Bip39WordsNum.WORDS_NUM_12).ToStr().split()
 
 def fix_checksum(first11: str):
     for w in WORDS_EN:
@@ -45,29 +35,26 @@ def fix_checksum(first11: str):
             return full
     return None
 
-# ───────────────────────── GENERATION ─────────────────────────
-
-def generate_phrases(model, addr_tensor, max_phrases=BATCH_PHRASES):
-    model.eval(); tried=set(); out=[]
+def generate_with_model(model, addr_tensor, num_variants=5):
+    model.eval()
+    results = []
     with torch.no_grad():
-        logits0,_ = model(addr_tensor, torch.full((1,12), PAD_IDX, dtype=torch.long, device=DEVICE))
-        p0 = torch.softmax(logits0[0,0], dim=0)
-        for idx in torch.argsort(p0, descending=True):
-            if len(out) >= max_phrases: break
-            gen = torch.full((1,12), PAD_IDX, dtype=torch.long, device=DEVICE)
-            gen[0,0] = idx
-            words=[IDX2WORD[idx.item()]]
-            for pos in range(1,11):
-                logits,_ = model(addr_tensor, gen.clone())
-                nxt=torch.argmax(torch.softmax(logits[0,pos], dim=0))
-                gen[0,pos]=nxt; words.append(IDX2WORD[nxt.item()])
-            raw=" ".join(words)
-            fixed=fix_checksum(raw)
-            if fixed and fixed not in tried:
-                tried.add(fixed); out.append(fixed)
-    return out
+        for _ in range(num_variants):
+            tgt = torch.full((1, 12), PAD_IDX, dtype=torch.long).to(DEVICE)
+            tgt[0, 0] = BOS_IDX
+            for i in range(1, 12):
+                logits, _ = model(addr_tensor, tgt)
+                next_token = torch.argmax(logits[0, i - 1])
+                tgt[0, i] = next_token
+            phrase = " ".join(IDX2WORD[t.item()] for t in tgt[0])
+            if Bip39MnemonicValidator().IsValid(phrase):
+                results.append(phrase)
+            else:
+                fixed = fix_checksum(" ".join(phrase.split()[:11]))
+                if fixed:
+                    results.append(fixed)
+    return list(set(results))
 
-# ───────────────────────── DERIVATIONS ─────────────────────────
 
 def seed_from_mnemonic(m):
     return Bip39SeedGenerator(m).Generate()
@@ -103,8 +90,6 @@ def derive_sol(seed, path="m/44'/501'/0'/0'"):
     secret64 = (sk.encode() + pubkey).hex()
     return base58.b58encode(pubkey).decode(), secret64
 
-# ───────────────────────── BALANCE CHECKS ─────────────────────────
-
 def eth_balance(addr):
     try:
         wei = int(
@@ -130,30 +115,18 @@ def sol_balance(addr):
         return lamports / 1e9
     except:
         return None
-
-def btc_balance_single(addr: str, retries: int = BTC_RETRIES):
-    url = f"https://blockstream.info/api/address/{addr}"
-    for _ in range(retries):
-        try:
-            r = requests.get(url, timeout=15)
-            if r.status_code == 200:
-                data = r.json()
-                funded = data["chain_stats"]["funded_txo_sum"]
-                spent  = data["chain_stats"]["spent_txo_sum"]
-                return (funded - spent) / 1e8
-            else:
-                time.sleep(1)
-        except Exception:
-            time.sleep(1)
-    return None
-
-# ───────────────────────── MAIN ─────────────────────────
-
+    
 def main():
     if len(sys.argv) < 2:
-        addr = input("Enter address (or list via space): ").strip()
-        if not addr: return
-        addresses = addr.split()
+        try:
+            addr = input("Enter address (or list via space): ").strip()
+            if not addr:
+                print("No address provided.")
+                return
+            addresses = addr.split()
+        except EOFError:
+            print("Input aborted.")
+            return
     else:
         addresses = [a for a in sys.argv[1:] if len(a.strip()) >= 5]
 
@@ -162,42 +135,23 @@ def main():
 
     model = FullTransformerModel().to(DEVICE)
     model.load_state_dict(torch.load(CHECKPOINT_PATH, map_location=DEVICE)["model"])
-    model.eval(); print("✅ Model loaded.")
+    model.eval(); print("\u2705 Model loaded.")
 
     for addr in addresses:
-        print(f"\n🔍 {addr}")
-        phrases = generate_phrases(model, encode_address(addr), BATCH_PHRASES)
+        print(f"\n\ud83d\udd0d {addr}")
+        phrases = generate_with_model(model, encode_address(addr))
         if not phrases:
             print("No valid mnemonics"); continue
 
-        btc_jobs = []
         for ph in phrases:
             seed = seed_from_mnemonic(ph)
-            eth_a, eth_k = derive_eth(seed)
-            btc_a, btc_k = derive_btc(seed)
-            sol_a, sol_k = derive_sol(seed)
-
-            eb = eth_balance(eth_a)
-            sb = sol_balance(sol_a)
-
-            btc_jobs.append((btc_a, ph, eth_a, eb, sol_a, sb))
-
-        with futures.ThreadPoolExecutor(max_workers=BTC_MAX_WORKERS) as ex:
-            fut_to_data = {ex.submit(btc_balance_single, j[0]): j for j in btc_jobs}
-            for fut in futures.as_completed(fut_to_data):
-                bb = fut.result()
-                btc_a, ph, eth_a, eb, sol_a, sb = fut_to_data[fut]
-
-                print("\n🔑", ph)
-                print(f"ETH: {eth_a}, Bal: {eb}")
-                print(f"BTC: {btc_a}, Bal: {bb}")
-                print(f"SOL: {sol_a}, Bal: {sb}")
-
-                with open("attempts.txt", "a", encoding="utf-8") as logf:
-                    logf.write(f"[{datetime.now().isoformat()}] TRY | Phrase: {ph}\n")
-                    logf.write(f"    ETH: {eth_a}, Bal: {eb}\n")
-                    logf.write(f"    BTC: {btc_a}, Bal: {bb}\n")
-                    logf.write(f"    SOL: {sol_a}, Bal: {sb}\n\n")
+            eth_a, _ = derive_eth(seed)
+            btc_a, _ = derive_btc(seed)
+            sol_a, _ = derive_sol(seed)
+            print("\n\ud83d\udd11", ph)
+            print(f"ETH: {eth_a}, Bal: {eth_balance(eth_a)}")
+            print(f"BTC: {btc_a}")
+            print(f"SOL: {sol_a}, Bal: {sol_balance(sol_a)}")
 
 if __name__ == "__main__":
     main()
