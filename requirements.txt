@@ -1,0 +1,6 @@
+torch>=2.0.0
+tqdm
+bip-utils>=2.6.0
+eth_account
+pynacl
+requests
