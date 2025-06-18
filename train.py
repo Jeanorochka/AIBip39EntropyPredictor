@@ -90,8 +90,11 @@ class MnemonicDataset(Dataset):
                     for coin in ["eth", "btc", "sol"]:
                         address = item.get(coin)
                         pubkey_bytes = derive_pubkey_bytes(address, coin)
-                        if address and pubkey_bytes:
+                        if address and pubkey_bytes and len(pubkey_bytes) >= 33:
                             self.data.append((pubkey_bytes, phrase, coin))
+                        else:
+                            self.skipped += 1
+                            
                 except json.JSONDecodeError:
                     self.skipped += 1
         print(f"Loaded {len(self.data):,} samples | Skipped: {self.skipped:,}")
