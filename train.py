@@ -103,7 +103,8 @@ class MnemonicDataset(Dataset):
         return len(self.data)
 
     def __getitem__(self, idx):
-        #
+        
+        COIN2IDX = {"eth": 1, "btc": 2, "sol": 3}
         pubkey_bytes, phrase, coin = self.data[idx]  
         assert len(pubkey_bytes) >= 33, "Pubkey слишком короткий"
         pubkey_trunc = pubkey_bytes[:33]  
