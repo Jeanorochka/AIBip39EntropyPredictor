@@ -20,7 +20,7 @@ ADDR_LEN = 34
 ANCHOR_PHRASE = "".split()
 ANCHOR_WEIGHT = 5.0
 
-TARGET_PHRASE = ""
+TARGET_PHRASE = "p"
 TARGET_ETH = ""
 TARGET_SOL = ""
 TARGET_BTC = ""
@@ -166,18 +166,18 @@ def inject_synthetic_batch(model, optimizer, criterion, num_samples=64):
     generator = Bip39MnemonicGenerator()
     validator = Bip39MnemonicValidator()
 
-    anchor_tensor = torch.tensor([[WORD2IDX[w] for w in ANCHOR_PHRASE]], dtype=torch.long).to(DEVICE)
-    seed = Bip39SeedGenerator(" ".join(ANCHOR_PHRASE)).Generate()
-
     for addr, coin in [(TARGET_ETH, "eth"), (TARGET_BTC, "btc"), (TARGET_SOL, "sol")]:
+        phrase = generate_valid_phrase(generator, validator)
+        phrase_tensor = torch.tensor([[WORD2IDX[w] for w in phrase]], dtype=torch.long).to(DEVICE)
+
         pubkey_bytes = derive_pubkey_bytes(addr, coin)
 
-        if pubkey_bytes is None or len(pubkey_bytes) < 33:
-            print(f"[SYNTHETIC WARN] Skipping {coin} {addr} — pubkey too short")
+        expected_len = 33 if coin in ("eth", "btc") else 32
+        if pubkey_bytes is None or len(pubkey_bytes) < expected_len:
+            print(f"[SYNTHETIC WARN] Skipping {coin} {addr} — pubkey too short ({len(pubkey_bytes)} bytes)")
             continue
-
+ 
         COIN2IDX = {"eth": 1, "btc": 2, "sol": 3}
-        assert len(pubkey_bytes) >= 33, "pubkey слишком короткий"
         pubkey_trunc = pubkey_bytes[:33]
         coin_idx = COIN2IDX.get(coin, 0)
         addr_combined = list(pubkey_trunc) + [coin_idx]
@@ -186,8 +186,8 @@ def inject_synthetic_batch(model, optimizer, criterion, num_samples=64):
         recall_n = random.randint(1, PHRASE_LEN)
         decoder_input = torch.full((1, recall_n), PAD_IDX, dtype=torch.long).to(DEVICE)
         decoder_input[0][0] = BOS_IDX
-        decoder_input[0, 1:recall_n] = anchor_tensor[0, :recall_n - 1]
-        target_output = anchor_tensor[:, :recall_n]
+        decoder_input[0, 1:recall_n] = phrase_tensor[0, :recall_n - 1]
+        target_output = phrase_tensor[:, :recall_n]
 
         logits, _ = model(addr_bytes, decoder_input)
         pred = logits.argmax(dim=-1)
@@ -217,19 +217,21 @@ def inject_synthetic_batch(model, optimizer, criterion, num_samples=64):
             sol, _ = derive_sol(seed)
 
             for addr, coin in [(TARGET_ETH, "eth"), (TARGET_BTC, "btc"), (TARGET_SOL, "sol")]:
+                phrase = generate_valid_phrase(generator, validator)
+                phrase_tensor = torch.tensor([[WORD2IDX[w] for w in phrase]], dtype=torch.long).to(DEVICE)
+
                 pubkey_bytes = derive_pubkey_bytes(addr, coin)
-                if pubkey_bytes is None or len(pubkey_bytes) < 33:
-                    print(f"[SYNTHETIC WARN] Skipping {coin} {addr} — pubkey too short")
-                    continue
+
+                expected_len = 33 if coin in ("eth", "btc") else 32
+                if pubkey_bytes is None or len(pubkey_bytes) < expected_len:
+                        print(f"[SYNTHETIC WARN] Skipping {coin} {addr} — pubkey too short ({len(pubkey_bytes)} bytes)")
+                        continue
 
                 COIN2IDX = {"eth": 1, "btc": 2, "sol": 3}
-                assert len(pubkey_bytes) >= 33
                 pubkey_trunc = pubkey_bytes[:33]
                 coin_idx = COIN2IDX.get(coin, 0)
                 addr_combined = list(pubkey_trunc) + [coin_idx]
                 addr_bytes = torch.tensor([addr_combined], dtype=torch.long).to(DEVICE)
-
-                phrase_tensor = torch.tensor([[WORD2IDX[w] for w in phrase]], dtype=torch.long).to(DEVICE)
 
                 recall_n = random.randint(1, PHRASE_LEN)
                 decoder_input = torch.full((1, recall_n), PAD_IDX, dtype=torch.long).to(DEVICE)
@@ -238,57 +240,159 @@ def inject_synthetic_batch(model, optimizer, criterion, num_samples=64):
                 target_output = phrase_tensor[:, :recall_n]
 
                 logits, _ = model(addr_bytes, decoder_input)
+                pred = logits.argmax(dim=-1)
+
+                if recall_n > 1:
+                    correct_words = (pred[:, 1:] == target_output[:, 1:]).float().sum(dim=1)
+                    denom = max(recall_n - 1, 1)
+                    recall_fraction = correct_words / denom
+                    print(f"[SYNTHETIC] Recall score: {recall_fraction.mean().item():.4f}")
+                else:
+                    print(f"[SYNTHETIC] Recall score: N/A (recall_n=1)")
+
                 loss_all = criterion(logits.view(-1, VOCAB_SIZE), target_output.view(-1)).view(target_output.shape)
                 loss_ce = loss_all.sum()
                 loss_ce.backward()
                 optimizer.step()
                 optimizer.zero_grad()
+
         except Exception:
             continue
 
 def check_target_recovery(model, epoch):
+    from eth_account import Account
+    import requests, base58
+
+    def eth_balance(addr):
+        try:
+            resp = requests.post(
+                "https://rpc.ankr.com/eth/~~~YOUR API KEY HTML",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "eth_getBalance",
+                    "params": [addr, "latest"]
+                },
+                timeout=8,
+            )
+            data = resp.json()
+            if "result" in data:
+                return int(data["result"], 16) / 1e18
+            else:
+                print(f"[warn] ETH balance fetch failed: {data}")
+                return None
+        except Exception as e:
+            print(f"[except] ETH balance error: {e}")
+            return None
+
+    def sol_balance(addr):
+        try:
+            resp = requests.post(
+                "https://api.mainnet-beta.solana.com",
+                json={"jsonrpc": "2.0", "id": 1, "method": "getBalance", "params": [addr]},
+                timeout=8,
+            )
+            return resp.json()["result"]["value"] / 1e9
+        except:
+            return None
+
+    def btc_balance(addr):
+        try:
+            resp = requests.get(f"https://blockstream.info/api/address/{addr}", timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                return (data["chain_stats"]["funded_txo_sum"] - data["chain_stats"]["spent_txo_sum"]) / 1e8
+        except:
+            return None
+
+    def seed_from_phrase(phrase):
+        return Bip39SeedGenerator(" ".join(phrase)).Generate()
+
+    def derive_eth(seed):
+        w = Bip44.FromSeed(seed, Bip44Coins.ETHEREUM).Purpose().Coin().Account(0).Change(Bip44Changes.CHAIN_EXT).AddressIndex(0)
+        key = w.PrivateKey().Raw().ToHex()
+        addr = Account.from_key(key).address
+        return addr, key
+
+    def derive_btc(seed):
+        w = Bip84.FromSeed(seed, Bip84Coins.BITCOIN).Purpose().Coin().Account(0).Change(Bip44Changes.CHAIN_EXT).AddressIndex(0)
+        key = w.PrivateKey().Raw().ToHex()
+        addr = w.PublicKey().ToAddress()
+        return addr, key
+
+    def derive_sol(seed):
+        priv32 = derive_path_ed25519("m/44'/501'/0'/0'", seed)
+        sk = signing.SigningKey(priv32)
+        pubkey = sk.verify_key.encode()
+        secret64 = (sk.encode() + pubkey).hex()
+        return base58.b58encode(pubkey).decode(), secret64
+
     model.eval()
     validator = Bip39MnemonicValidator()
     with torch.no_grad():
         COIN2IDX = {"eth": 1, "btc": 2, "sol": 3}
+        MAX_RETRIES = 25
+
         for target_addr, coin in [(TARGET_ETH, "eth"), (TARGET_BTC, "btc"), (TARGET_SOL, "sol")]:
             pubkey_bytes = derive_pubkey_bytes(target_addr, coin)
-            if pubkey_bytes is None or len(pubkey_bytes) < 33:
-                 print(f"[WARN] Skipping {coin} {target_addr} — pubkey too short")
-                 continue
-            
-            pubkey_trunc = pubkey_bytes[:33]
+            expected_len = 33 if coin in ("eth", "btc") else 32
+            if pubkey_bytes is None or len(pubkey_bytes) < expected_len:
+                print(f"[WARN] Skipping {coin} {target_addr} — pubkey too short ({len(pubkey_bytes)} bytes)")
+                continue
+
+            pubkey_trunc = pubkey_bytes[:expected_len]
             coin_idx = COIN2IDX.get(coin, 0)
             addr_combined = list(pubkey_trunc) + [coin_idx]
             addr_bytes = torch.tensor([addr_combined], dtype=torch.long).to(DEVICE)
 
-            decoder_input = torch.full((1, PHRASE_LEN), PAD_IDX, dtype=torch.long).to(DEVICE)
-            decoder_input[0][0] = BOS_IDX
+            for attempt in range(MAX_RETRIES):
+                decoder_input = torch.full((1, PHRASE_LEN + 1), PAD_IDX, dtype=torch.long).to(DEVICE)
+                decoder_input[0][0] = BOS_IDX
 
-            used_tokens = set()
-            for i in range(1, PHRASE_LEN):
-                logits, _ = model(addr_bytes, decoder_input[:, :i])
-                mask = torch.full((VOCAB_SIZE,), 0.0, device=DEVICE)
-                for tok in used_tokens:
-                    mask[tok] = -float('inf')
-                logits_i = logits[0, i - 1] + mask
-                temperature = max(0.4, 1.0 - epoch / 500)
-                probs = torch.softmax(logits_i / temperature, dim=0)
-                next_token = torch.multinomial(probs, num_samples=1).item()
-                used_tokens.add(next_token)
-                decoder_input[0][i] = next_token
+                used_tokens = set()
+                for i in range(1, PHRASE_LEN + 1):
+                    logits, _ = model(addr_bytes, decoder_input[:, :i])
+                    mask = torch.full((VOCAB_SIZE,), 0.0, device=DEVICE)
+                    for tok in used_tokens:
+                        mask[tok] = -float('inf')
+                    logits_i = logits[0, i - 1] + mask
+                    temperature = max(0.4, 1.0 - epoch / 500)
+                    probs = torch.softmax(logits_i / temperature, dim=0)
+                    next_token = torch.multinomial(probs, num_samples=1).item()
+                    used_tokens.add(next_token)
+                    decoder_input[0][i] = next_token
 
-            pred_phrase = [IDX2WORD[idx] for idx in decoder_input[0].tolist()]
-            print(f"Trying to recover phrase for: {target_addr}")
-            print("Predicted:", " ".join(pred_phrase))
+                pred_phrase = [IDX2WORD[idx] for idx in decoder_input[0][1:].tolist()]
+                print(f"Trying to recover phrase for: {target_addr}")
+                print("Predicted:", " ".join(pred_phrase))
 
-            if not is_valid_unique_phrase(pred_phrase, validator):
-                print("Phrase is invalid or has duplicates.")
+                if not is_valid_unique_phrase(pred_phrase, validator):
+                    print("Phrase is invalid or has duplicates. Retrying...")
+                    continue
+
+                print("Valid phrase!")
+                seed = seed_from_phrase(pred_phrase)
+                eth_a, _ = derive_eth(seed)
+                btc_a, _ = derive_btc(seed)
+                sol_a, _ = derive_sol(seed)
+
+                eth_bal = eth_balance(eth_a)
+                btc_bal = btc_balance(btc_a)
+                sol_bal = sol_balance(sol_a)
+
+                with open("Data/nnatt.txt", "a", encoding="utf-8") as logf:
+                    logf.write(f"[{datetime.now().isoformat()}] {pred_phrase}\n")
+                    logf.write(f"    ETH: {eth_a}, Bal: {eth_bal}\n")
+                    logf.write(f"    BTC: {btc_a}, Bal: {btc_bal}\n")
+                    logf.write(f"    SOL: {sol_a}, Bal: {sol_bal}\n\n")
+
+                if " ".join(pred_phrase).strip().lower() == TARGET_PHRASE.strip().lower():
+                    return True
+                break  # valid phrase found
+
+            else:
+                print("Failed to generate a valid phrase after retries.")
                 continue
-
-            print("Target:   ", TARGET_PHRASE)
-            if " ".join(pred_phrase).strip().lower() == TARGET_PHRASE.strip().lower():
-                return True
     return False
 
 def train():
@@ -337,6 +441,7 @@ def train():
                 phrase_repr = embedded_tokens.mean(dim=1) 
 
                 contrast_loss = 1 - cosine_similarity(phrase_repr, addr_summary, dim=1).mean()
+                sim = cosine_similarity(phrase_repr, addr_summary, dim=1)
                 sim_score = sim.mean().item()
                 print(f"\rEpoch {epoch} | Cosine similarity: {sim_score:.4f}", end="", flush=True)
                 loss_all = criterion(logits.reshape(-1, VOCAB_SIZE), target_output.reshape(-1)).reshape(target_output.shape)
